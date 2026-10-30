@@ -95,12 +95,29 @@ jobs:
           - os: macos-26
             platform: mac-arm64
             builder_args: --mac --arm64
+            unpacked: dist/mac-arm64/LearnHarness.app/Contents
           - os: windows-2025
             platform: windows-x64
             builder_args: --win --x64
+            unpacked: dist/win-unpacked
+          # Windows on ARM: native runner so Next traces win32-arm64 native
+          # binaries. A dedicated update channel keeps this build's feed
+          # (arm64.yml) separate from the x64 latest.yml.
+          - os: windows-11-arm
+            platform: windows-arm64
+            builder_args: --win --arm64 -c.publish.channel=arm64
+            unpacked: dist/win-arm64-unpacked
           - os: ubuntu-24.04
             platform: linux-x64
             builder_args: --linux --x64
+            unpacked: dist/linux-unpacked
+          # Linux arm64: native runner. electron-builder names the updater
+          # feed latest-linux-arm64.yml, which electron-updater requests on
+          # arm64 automatically.
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+            builder_args: --linux --arm64
+            unpacked: dist/linux-arm64-unpacked
     runs-on: ${{ matrix.os }}
     # Apple's notarization queue has taken ~2 hours for this team.
     timeout-minutes: 180
@@ -175,33 +192,36 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             macOS)
-              app="dist/mac-arm64/LearnHarness.app/Contents"
+              app="${{ matrix.unpacked }}"
               payload="$app/Resources/server/standalone"
               runtime="$app/MacOS/LearnHarness"
               ;;
             Windows)
-              payload="dist/win-unpacked/resources/server/standalone"
-              runtime="dist/win-unpacked/LearnHarness.exe"
+              payload="${{ matrix.unpacked }}/resources/server/standalone"
+              runtime="${{ matrix.unpacked }}/LearnHarness.exe"
               ;;
             Linux)
-              payload="dist/linux-unpacked/resources/server/standalone"
-              runtime="dist/linux-unpacked/learnharness"
+              payload="${{ matrix.unpacked }}/resources/server/standalone"
+              runtime="${{ matrix.unpacked }}/learnharness"
               ;;
           esac
           node scripts/smoke-provider-runtime.mjs --standalone "$payload"
           node scripts/smoke-provider-runtime.mjs --standalone "$payload" --runtime "$runtime"
+      - name: Install xvfb for the packaged demo smoke (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Exercise packaged demo runtime (own Electron, no system Chrome)
         run: |
           case "$RUNNER_OS" in
             macOS)
-              app="dist/mac-arm64/LearnHarness.app/Contents"
+              app="${{ matrix.unpacked }}"
               node scripts/smoke-demo-runtime.mjs --standalone "$app/Resources/server/standalone" --runtime "$app/MacOS/LearnHarness" --browser
               ;;
             Windows)
-              node scripts/smoke-demo-runtime.mjs --standalone dist/win-unpacked/resources/server/standalone --runtime dist/win-unpacked/LearnHarness.exe --browser
+              node scripts/smoke-demo-runtime.mjs --standalone "${{ matrix.unpacked }}/resources/server/standalone" --runtime "${{ matrix.unpacked }}/LearnHarness.exe" --browser
               ;;
             Linux)
-              xvfb-run -a node scripts/smoke-demo-runtime.mjs --standalone dist/linux-unpacked/resources/server/standalone --runtime dist/linux-unpacked/learnharness --browser
+              xvfb-run -a node scripts/smoke-demo-runtime.mjs --standalone "${{ matrix.unpacked }}/resources/server/standalone" --runtime "${{ matrix.unpacked }}/learnharness" --browser
               ;;
           esac
       - name: Save installers and update metadata
@@ -217,15 +237,19 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.blockmap
+            # latest*.yml for mac/x64/Linux-x64, plus the Windows arm64
+            # channel feed (arm64.yml).
             dist/latest*.yml
+            dist/arm64.yml
 
-  # The last gate before a human publishes: after ALL three packaging jobs
+  # The last gate before a human publishes: after ALL five packaging jobs
   # have uploaded, fail the run unless the tag's single draft release holds
-  # exactly the 11 verified assets (4 installers + mac updater ZIP + their
-  # blockmaps + 3 latest*.yml feeds) and the feeds reference those uploads
-  # by exact name at the package.json version. Read-only: it never creates,
-  # edits, publishes, or deletes anything. Manual rehearsals upload nothing,
-  # so there is no draft to verify and the job stays skipped.
+  # exactly the verified assets (macOS DMG + updater ZIP, Windows x64/ARM64
+  # installers, Linux x64/ARM64 AppImage + deb, their blockmaps, and five
+  # updater feeds) and the feeds reference those uploads by exact name at
+  # the package.json version. Read-only: it never creates, edits, publishes,
+  # or deletes anything. Manual rehearsals upload nothing, so there is no
+  # draft to verify and the job stays skipped.
   verify:
     name: Verify draft release
     needs: package
@@ -256,13 +280,15 @@ jobs:
       - name: Select the tag's single draft
         # Machine JSON on stdout (release id + asset ids); warnings on stderr.
         run: npx tsx scripts/verify-release.ts select "$RUNNER_TEMP/releases.json" --tag "$GITHUB_REF_NAME" > "$RUNNER_TEMP/draft.json"
-      - name: Download the three update feeds
+      - name: Download the five update feeds
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/metadata"
-          for name in latest-mac.yml latest.yml latest-linux.yml; do
+          # mac, Windows x64, Windows arm64 (dedicated channel), Linux x64,
+          # Linux arm64 (electron-updater's arch-specific feed name).
+          for name in latest-mac.yml latest.yml arm64.yml latest-linux.yml latest-linux-arm64.yml; do
             id=$(DRAFT="$RUNNER_TEMP/draft.json" NAME="$name" node -e '
               const fs = require("node:fs");
               const draft = JSON.parse(fs.readFileSync(process.env.DRAFT, "utf8"));
