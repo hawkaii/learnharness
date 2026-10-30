@@ -23,7 +23,7 @@ function windowOptions(platform: string, env: Record<string, string> = {}, repor
 		once() {}
 	}
 	const electron = {
-		app: { setName() {}, getPath: () => "/fixture/LearnHarness", setPath() {}, requestSingleInstanceLock: () => false, quit() {} },
+		app: { setName() {}, getPath: () => "/fixture/LearnHarness", setPath() {}, requestSingleInstanceLock: () => false, quit() {}, commandLine: { appendSwitch() {} } },
 		BrowserWindow: FakeWindow,
 		nativeTheme: { shouldUseDarkColors: true, themeSource: "system", on() {} },
 		session: { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
@@ -283,6 +283,11 @@ describe("desktop packaging policy", () => {
 		assert.deepEqual(config.linux.target, ["AppImage", "deb"]);
 		assert.equal(config.linux.syncDesktopName, true);
 		assert.equal(config.publish.releaseType, "draft");
+	});
+
+	it("disables LCD text on Linux so fractional scaling cannot fringe small labels", () => {
+		const main = readFileSync(new URL("../electron/main.cjs", import.meta.url), "utf8");
+		assert.match(main, /process\.platform === "linux"[\s\S]{0,160}disable-lcd-text/);
 	});
 
 	it("deb has public maintainer metadata and a matching desktop identity", () => {
