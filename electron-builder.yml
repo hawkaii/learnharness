@@ -1,4 +1,4 @@
-# electron-builder config — LearnHarness desktop (macOS arm64; Windows/Linux x64).
+# electron-builder config — LearnHarness desktop (macOS arm64; Windows/Linux x64 + arm64).
 #
 # Shape (fact-checked 2026-09-17):
 #   - the app's real server (.next/standalone, curated by
@@ -153,10 +153,13 @@ dmg:
 afterPack: scripts/after-pack.cjs
 win:
   icon: build/icon.ico
+  # Arch comes from the CLI (--x64 / --arm64), NOT from target.arch: listing
+  # both here makes electron-builder build BOTH even when the job passes a
+  # single arch flag. Each release runner builds one native arch. Windows
+  # ARM64 gets its own "arm64" update channel (see the publish section) so
+  # it cannot overwrite the x64 latest.yml feed.
   target:
-    - target: nsis
-      arch:
-        - x64
+    - nsis
   artifactName: "${productName}-${version}-${arch}-setup.${ext}"
   # Unsigned Windows release (owner ruling): preserve icon/version metadata,
   # skip signing, and do not require a publisher signature for updates.
@@ -167,13 +170,12 @@ nsis:
   perMachine: false
 linux:
   icon: build/icon.png
+  # Arch comes from the CLI (--x64 / --arm64), not target.arch: see the win
+  # note above. Linux ARM64 writes latest-linux-arm64.yml automatically
+  # (electron-updater asks for that arch-specific name on arm64).
   target:
-    - target: AppImage
-      arch:
-        - x64
-    - target: deb
-      arch:
-        - x64
+    - AppImage
+    - deb
   artifactName: "${productName}-${version}-${arch}.${ext}"
   category: Education
   # Match Electron's app_id/WM_CLASS to the installed desktop launcher.
@@ -187,8 +189,14 @@ publish:
   # from a private repo are impossible, and a token baked into the app
   # would be a leak. desktop:dist passes no --publish flag, so builds never
   # upload; publishing happens at release time (GH_TOKEN + --publish).
-  - provider: github
-    owner: amosblomqvist
-    repo: learnharness
-    # All three CI jobs contribute assets; only the owner publishes it.
-    releaseType: draft
+  #
+  # Object, not a one-element array (2026-10-30): the Windows arm64 job
+  # overrides this with `-c.publish.channel=arm64`. electron-builder's
+  # deepAssign replaces an array wholesale when the override is an object;
+  # an object target merges, preserving owner/repo/releaseType while adding
+  # the channel.
+  provider: github
+  owner: amosblomqvist
+  repo: learnharness
+  # All five CI jobs contribute assets; only the owner publishes it.
+  releaseType: draft

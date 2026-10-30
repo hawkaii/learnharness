@@ -1,7 +1,7 @@
 /**
  * verify-release.ts — the final desktop-release gate (2026-10-13).
  *
- * Runs in the release workflow's LAST job, after all three packaging jobs
+ * Runs in the release workflow's LAST job, after all five packaging jobs
  * have uploaded to the tag's single draft GitHub Release, and fails the
  * workflow unless that draft holds exactly what end users and
  * electron-updater need. The workflow never publishes; this script only
@@ -19,17 +19,28 @@
  *     feed   latest-mac.yml — files[0] is the ZIP (writeUpdateInfoFiles
  *            sorts zip first) and the legacy top-level path/sha512 point
  *            at it.
- *   win (nsis x64; artifactName "${productName}-${version}-${arch}-setup.${ext}"):
+ *   win (nsis x64 + arm64; artifactName
+ *            "${productName}-${version}-${arch}-setup.${ext}"):
  *     exe    LearnHarness-<v>-x64-setup.exe   + .blockmap (createBlockmap)
- *     feed   latest.yml — a single file entry, the exe.
- *   linux (AppImage + deb, x64; artifactName "${productName}-${version}-${arch}.${ext}"
- *            is user-forced at the linux level, so it overrides BOTH targets'
- *            default name formats, and ${arch} expands per target ext:
- *            x64→x86_64 for AppImage, x64→amd64 for deb):
+ *     exe    LearnHarness-<v>-arm64-setup.exe + .blockmap (createBlockmap)
+ *     feed   latest.yml — the x64 exe.
+ *     feed   arm64.yml — the arm64 exe. Windows feed names have no platform
+ *            suffix, so the release workflow gives the arm64 build its own
+ *            publish channel (`-c.publish.channel=arm64`) instead of
+ *            overwriting latest.yml.
+ *   linux (AppImage + deb, x64 + arm64; artifactName
+ *            "${productName}-${version}-${arch}.${ext}" is user-forced at the
+ *            linux level, so it overrides BOTH targets' default name formats,
+ *            and ${arch} expands via getArtifactArchName:
+ *            x64→x86_64/amd64 for AppImage/deb, arm64→arm64 for both):
  *     image  LearnHarness-<v>-x86_64.AppImage (no blockmap in 26.15.3)
  *     deb    LearnHarness-<v>-amd64.deb       (no blockmap)
- *     feed   latest-linux.yml — the AppImage and deb entries merged by
+ *     image  LearnHarness-<v>-arm64.AppImage  (no blockmap)
+ *     deb    LearnHarness-<v>-arm64.deb       (no blockmap)
+ *     feed   latest-linux.yml — the x64 AppImage and deb entries merged by
  *            writeUpdateInfoFiles (order not deterministic; checked as a set).
+ *     feed   latest-linux-arm64.yml — the arm64 pair; electron-updater's
+ *            getChannelFilePrefix asks for this name on arm64 automatically.
  *
  * GitHub asset names equal these file names (all are already "safe" GitHub
  * names, so electron-publish uploads under the plain name) and every yml
@@ -87,12 +98,19 @@ export type DraftSelection =
 	| { ok: true; release: ReleaseRecord; warnings: string[] }
 	| Failures;
 
-/** The full expected asset inventory for one version (11 files). */
+/** The full expected asset inventory for one version (17 files). */
 export type ExpectedAssets = {
 	version: string;
 	mac: { dmg: string; zip: string; feed: string };
-	win: { exe: string; feed: string };
-	linux: { appImage: string; deb: string; feed: string };
+	win: { exe: string; arm64Exe: string; feed: string; arm64Feed: string };
+	linux: {
+		appImage: string;
+		deb: string;
+		arm64AppImage: string;
+		arm64Deb: string;
+		feed: string;
+		arm64Feed: string;
+	};
 	/** Every asset name the draft must hold, and no others. */
 	files: string[];
 };
@@ -125,22 +143,47 @@ export function expectedAssets(version: string): ExpectedAssets {
 	};
 	const win = {
 		exe: `${PRODUCT_NAME}-${version}-x64-setup.exe`,
+		arm64Exe: `${PRODUCT_NAME}-${version}-arm64-setup.exe`,
 		feed: "latest.yml",
+		// Dedicated channel set by the release workflow
+		// (`-c.publish.channel=arm64`); Windows feed names carry no platform
+		// suffix, so arm64 and x64 would otherwise collide on latest.yml.
+		arm64Feed: "arm64.yml",
 	};
 	const linux = {
+		// app-builder-lib's getArtifactArchName: arm64 stays "arm64" for both
+		// AppImage and deb (only x64 is remapped to x86_64/amd64).
 		appImage: `${PRODUCT_NAME}-${version}-x86_64.AppImage`,
 		deb: `${PRODUCT_NAME}-${version}-amd64.deb`,
+		arm64AppImage: `${PRODUCT_NAME}-${version}-arm64.AppImage`,
+		arm64Deb: `${PRODUCT_NAME}-${version}-arm64.deb`,
 		feed: "latest-linux.yml",
+		arm64Feed: "latest-linux-arm64.yml",
 	};
 	// Sidecar differential-update blockmaps: emitted for dmg, mac zip and
-	// NSIS exe (createBlockmap); AppImage/deb have none in app-builder-lib 26.15.3.
-	const blockmaps = [mac.dmg, mac.zip, win.exe].map((name) => `${name}.blockmap`);
+	// NSIS exes (createBlockmap); AppImage/deb have none in app-builder-lib 26.15.3.
+	const blockmaps = [mac.dmg, mac.zip, win.exe, win.arm64Exe].map((name) => `${name}.blockmap`);
 	return {
 		version,
 		mac,
 		win,
 		linux,
-		files: [mac.dmg, mac.zip, win.exe, linux.appImage, linux.deb, ...blockmaps, mac.feed, win.feed, linux.feed],
+		files: [
+			mac.dmg,
+			mac.zip,
+			win.exe,
+			win.arm64Exe,
+			linux.appImage,
+			linux.deb,
+			linux.arm64AppImage,
+			linux.arm64Deb,
+			...blockmaps,
+			mac.feed,
+			win.feed,
+			win.arm64Feed,
+			linux.feed,
+			linux.arm64Feed,
+		],
 	};
 }
 
@@ -265,7 +308,7 @@ export function verifyConfigAssumptions(config: unknown, pkg: unknown): { ok: tr
 	}
 	if (config.productName !== PRODUCT_NAME) bad(`productName is ${JSON.stringify(config.productName)}, expected "${PRODUCT_NAME}"`);
 	if (config.artifactName != null) bad("a top-level artifactName now overrides target defaults — expected names no longer hold");
-	const sameTargets = (actual: unknown, expected: Array<Record<string, unknown>>) =>
+	const sameTargets = (actual: unknown, expected: unknown[]) =>
 		JSON.stringify(actual) === JSON.stringify(expected);
 	if (!isPlainObject(config.mac)) bad("mac section missing");
 	else {
@@ -279,7 +322,10 @@ export function verifyConfigAssumptions(config: unknown, pkg: unknown): { ok: tr
 		if (config.win.artifactName !== "${productName}-${version}-${arch}-setup.${ext}") {
 			bad(`win.artifactName changed (${JSON.stringify(config.win.artifactName)}) — expected names no longer hold`);
 		}
-		if (!sameTargets(config.win.target, [{ target: "nsis", arch: ["x64"] }])) {
+		// Arch is selected by the release workflow's CLI flag (--x64 /
+		// --arm64) so one runner builds one native arch; target.arch must stay
+		// absent or a single job would build both.
+		if (!sameTargets(config.win.target, ["nsis"])) {
 			bad(`win.target changed (${JSON.stringify(config.win.target)}) — expected names no longer hold`);
 		}
 	}
@@ -288,13 +334,15 @@ export function verifyConfigAssumptions(config: unknown, pkg: unknown): { ok: tr
 		if (config.linux.artifactName !== "${productName}-${version}-${arch}.${ext}") {
 			bad(`linux.artifactName changed (${JSON.stringify(config.linux.artifactName)}) — expected names no longer hold`);
 		}
-		if (!sameTargets(config.linux.target, [{ target: "AppImage", arch: ["x64"] }, { target: "deb", arch: ["x64"] }])) {
+		if (!sameTargets(config.linux.target, ["AppImage", "deb"])) {
 			bad(`linux.target changed (${JSON.stringify(config.linux.target)}) — expected names no longer hold`);
 		}
 	}
-	const publish = Array.isArray(config.publish) ? config.publish[0] : undefined;
+	// Object (not a one-element array) so the Windows arm64 job's
+	// `-c.publish.channel=arm64` merges instead of replacing this config.
+	const publish = Array.isArray(config.publish) ? config.publish[0] : config.publish;
 	if (!isPlainObject(publish) || publish.provider !== "github" || publish.releaseType !== "draft") {
-		bad(`publish[0] must be the github provider with releaseType "draft" (${JSON.stringify(config.publish)}) — uploads would not land in the draft`);
+		bad(`publish must be the github provider with releaseType "draft" (${JSON.stringify(config.publish)}) — uploads would not land in the draft`);
 	}
 	if (errors.length > 0) {
 		errors.push("packaging config drifted from the verified shapes — re-derive the expected assets in scripts/verify-release.ts");
@@ -343,7 +391,9 @@ export function feedExpectations(expected: ExpectedAssets): FeedExpectation[] {
 	return [
 		{ file: expected.mac.feed, urls: [expected.mac.zip, expected.mac.dmg], first: expected.mac.zip },
 		{ file: expected.win.feed, urls: [expected.win.exe] },
+		{ file: expected.win.arm64Feed, urls: [expected.win.arm64Exe] },
 		{ file: expected.linux.feed, urls: [expected.linux.appImage, expected.linux.deb] },
+		{ file: expected.linux.arm64Feed, urls: [expected.linux.arm64AppImage, expected.linux.arm64Deb] },
 	];
 }
 
@@ -590,7 +640,7 @@ function main(argv: string[]): number {
 	const assets = verifyAssets(selection.release, expected);
 	if (!assets.ok) errors.push(...assets.errors);
 	const files: Record<string, string> = {};
-	for (const name of [expected.mac.feed, expected.win.feed, expected.linux.feed]) {
+	for (const name of feedExpectations(expected).map((expectation) => expectation.file)) {
 		try {
 			files[name] = fs.readFileSync(path.join(metadataDir, name), "utf8");
 		} catch {
@@ -602,7 +652,8 @@ function main(argv: string[]): number {
 	if (errors.length > 0) return fail(errors);
 	const present = expected.files.filter((name) => selection.release.assets.some((asset) => asset.name === name));
 	console.log(`assets: ${present.length}/${expected.files.length} expected files present, non-zero size, and "uploaded"`);
-	console.log(`feeds: ${expected.mac.feed}, ${expected.win.feed}, ${expected.linux.feed} parse, carry version ${start.version}, and reference only uploaded assets by exact name`);
+	const feedNames = feedExpectations(expected).map((expectation) => expectation.file);
+	console.log(`feeds: ${feedNames.join(", ")} parse, carry version ${start.version}, and reference only uploaded assets by exact name`);
 	console.log(`OK: draft for ${start.tag} is complete and consistent — ready for the owner to review and publish.`);
 	return 0;
 }

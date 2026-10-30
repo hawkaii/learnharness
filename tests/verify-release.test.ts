@@ -3,8 +3,9 @@
  * plus CLI end-to-end runs, all offline against fixtures. The expected asset
  * names asserted here are the ones verified against the INSTALLED
  * app-builder-lib 26.15.3 (see the script header for the derivation):
- * 11 assets — 4 installers (dmg / NSIS exe / AppImage / deb), the mac
- * updater ZIP, its/exe/dmg blockmaps, and the three latest*.yml feeds.
+ * 17 assets — macOS arm64 DMG + updater ZIP, Windows x64/arm64 NSIS
+ * installers, Linux x64/arm64 AppImage + deb, their blockmaps, and five
+ * updater feeds (including the Windows arm64 channel and Linux arm64).
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -34,7 +35,7 @@ function asset(id: number, name: string, overrides: Partial<ReleaseAsset> = {}):
 	return { id, name, size: 5000, state: "uploaded", ...overrides };
 }
 
-/** The complete, healthy 11-asset draft for a version. */
+/** The complete, healthy 17-asset draft for a version. */
 function healthyRelease(version: string, tagForm: "v" | "bare" = "v"): ReleaseRecord {
 	const e = expectedAssets(version);
 	return {
@@ -45,7 +46,7 @@ function healthyRelease(version: string, tagForm: "v" | "bare" = "v"): ReleaseRe
 	};
 }
 
-/** The three update feeds exactly as app-builder-lib writes them. */
+/** The five update feeds exactly as app-builder-lib writes them. */
 function healthyFeeds(version: string, release: ReleaseRecord): Record<string, string> {
 	const byName = new Map(release.assets.map((entry) => [entry.name, entry]));
 	const feeds: Record<string, string> = {};
@@ -64,19 +65,25 @@ function healthyFeeds(version: string, release: ReleaseRecord): Record<string, s
 }
 
 describe("release gate — expected asset inventory", () => {
-	it("is exactly the 11 verified builder outputs for the version", () => {
+	it("is exactly the 17 verified builder outputs for the version", () => {
 		assert.deepEqual(expectedAssets(VERSION).files, [
 			"LearnHarness-0.2.0-arm64.dmg",
 			"LearnHarness-0.2.0-arm64-mac.zip",
 			"LearnHarness-0.2.0-x64-setup.exe",
+			"LearnHarness-0.2.0-arm64-setup.exe",
 			"LearnHarness-0.2.0-x86_64.AppImage",
 			"LearnHarness-0.2.0-amd64.deb",
+			"LearnHarness-0.2.0-arm64.AppImage",
+			"LearnHarness-0.2.0-arm64.deb",
 			"LearnHarness-0.2.0-arm64.dmg.blockmap",
 			"LearnHarness-0.2.0-arm64-mac.zip.blockmap",
 			"LearnHarness-0.2.0-x64-setup.exe.blockmap",
+			"LearnHarness-0.2.0-arm64-setup.exe.blockmap",
 			"latest-mac.yml",
 			"latest.yml",
+			"arm64.yml",
 			"latest-linux.yml",
+			"latest-linux-arm64.yml",
 		]);
 	});
 
@@ -219,6 +226,14 @@ describe("release gate — update feeds", () => {
 		assert.ok(verdict.ok, JSON.stringify(verdict, null, 2));
 	});
 
+	it("keeps the Windows arm64 channel feed separate from x64", () => {
+		const e = expectedAssets(VERSION);
+		const arm = feedExpectations(e).find((expectation) => expectation.file === "arm64.yml");
+		assert.ok(arm);
+		assert.deepEqual(arm.urls, [e.win.arm64Exe]);
+		assert.notEqual(e.win.feed, e.win.arm64Feed);
+	});
+
 	it("accepts either AppImage/deb order in latest-linux.yml (builder order is not deterministic)", () => {
 		const release = healthyRelease(VERSION);
 		const e = expectedAssets(VERSION);
@@ -322,7 +337,7 @@ describe("release gate — workflow wiring", () => {
 	});
 
 	it("exposes the elevated token only to the two API-reading steps", () => {
-		const readers = ["List every release, drafts included", "Download the three update feeds"];
+		const readers = ["List every release, drafts included", "Download the five update feeds"];
 		for (const step of verify.steps) {
 			if (readers.includes(step.name)) assert.equal(step.env?.GH_TOKEN, "${{ github.token }}");
 			else assert.equal(step.env?.GH_TOKEN, undefined, String(step.name ?? step.uses));
@@ -354,10 +369,12 @@ describe("release gate — workflow wiring", () => {
 		}
 	});
 
-	it("download step fetches exactly the three update feeds from the selected draft", () => {
-		const download = verify.steps.find((step: any) => step.name === "Download the three update feeds");
+	it("download step fetches exactly the five update feeds from the selected draft", () => {
+		const download = verify.steps.find((step: any) => step.name === "Download the five update feeds");
 		assert.ok(download);
-		for (const feed of ["latest-mac.yml", "latest.yml", "latest-linux.yml"]) assert.ok(download.run.includes(feed));
+		for (const feed of ["latest-mac.yml", "latest.yml", "arm64.yml", "latest-linux.yml", "latest-linux-arm64.yml"]) {
+			assert.ok(download.run.includes(feed), feed);
+		}
 		assert.match(download.run, /releases\/assets\/\$id/);
 	});
 });
@@ -408,7 +425,7 @@ describe("release gate — CLI (offline, repo config)", () => {
 		try {
 			const result = run(["verify", path.join(root, "releases.json"), path.join(root, "metadata"), "--tag", TAG]);
 			assert.equal(result.status, 0, String(result.stderr));
-			assert.match(result.stdout, /11\/11 expected files present/);
+			assert.match(result.stdout, /17\/17 expected files present/);
 			assert.ok(result.stdout.includes(`OK: draft for ${TAG} is complete`));
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });

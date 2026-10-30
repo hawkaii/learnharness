@@ -7,8 +7,12 @@ This is a maintainer reference. For installation and normal use, start with [Get
 | Platform | Release runner | Packages | In-app update |
 | --- | --- | --- | --- |
 | macOS, Apple Silicon | `macos-26` arm64 | Signed/notarized DMG + ZIP | ZIP through Squirrel.Mac |
-| Windows, x64 | `windows-2025` | Unsigned per-user NSIS installer | NSIS |
+| Windows, x64 | `windows-2025` | Unsigned per-user NSIS installer | NSIS (`latest.yml`) |
+| Windows, ARM64 | `windows-11-arm` arm64 | Unsigned per-user NSIS installer | NSIS (`arm64.yml` channel) |
 | Linux, x64 | `ubuntu-24.04` | AppImage + `.deb` | AppImage replacement; `.deb` through dpkg/apt, with elevation if needed |
+| Linux, ARM64 | `ubuntu-24.04-arm` arm64 | AppImage + `.deb` | AppImage replacement; `.deb` through dpkg/apt, with elevation if needed |
+
+ARM64 packages are built on native ARM64 runners (never cross-built): Next traces the build host's native binaries into the standalone payload. Windows ARM64 uses a dedicated `arm64` updater channel because Windows feed names have no platform suffix; Linux ARM64 uses electron-updater's automatic `latest-linux-arm64.yml` name. The ARM64 installers are supported on Windows 11 ARM64 and 64-bit ARM Linux distributions; there is no 32-bit ARM build.
 
 Windows may show SmartScreen/unknown-publisher warnings. AppImage is the primary Linux download; `.deb` updates may require an administrator password. Both use the same download/restart banner. Targets/signing are defined in [`electron-builder.yml`](../electron-builder.yml); CI/release uses **Node 26**.
 
@@ -45,33 +49,48 @@ The release workflow also checks providers from the **packaged** payload under h
 For Windows/Linux, perform steps 1–6 on that OS, then:
 
 ```sh
-npx electron-builder --win --x64 --publish never    # Windows
-npx electron-builder --linux --x64 --publish never # Linux
+# On Windows (x64 or ARM64 host):
+npx electron-builder --win --x64 --publish never
+npx electron-builder --win --arm64 --publish never
+
+# On Linux (x64 or ARM64 host):
+npx electron-builder --linux --x64 --publish never
+npx electron-builder --linux --arm64 --publish never
+
+# Windows ARM64 release builds use their own updater channel:
+npx electron-builder --win --arm64 -c.publish.channel=arm64 --publish never
 ```
 
 ## CI and release modes
 
-[CI](../.github/workflows/ci.yml) runs typecheck/tests/lint on Ubuntu, plus standalone/native checks on macOS, Windows, and Linux. Its `macos-15` job does not compile the release icon.
+[CI](../.github/workflows/ci.yml) runs typecheck/tests/lint on Ubuntu, plus standalone/native checks on macOS, Windows, and Linux. Its `macos-15` job does not compile the release icon. The desktop matrix also covers Windows and Linux ARM64 (`windows-11-arm`, `ubuntu-24.04-arm`).
 
 [Desktop release](../.github/workflows/release.yml) has two modes:
 
 - **Manual dispatch:** unsigned rehearsal installers retained as workflow artifacts for seven days. No signing secrets, release creation, or publication. macOS notarization is skipped; these are not production installers.
-- **Matching `v<package.json version>` tag:** gates, one shared draft-preparation job, three OS packaging/upload jobs, then read-only draft verification. Published/ambiguous existing releases fail preparation; same-ref runs serialize rather than cancelling uploads. macOS must sign/notarize. **The workflow never publishes the draft.**
+- **Matching `v<package.json version>` tag:** gates, one shared draft-preparation job, five OS packaging/upload jobs, then read-only draft verification. Published/ambiguous existing releases fail preparation; same-ref runs serialize rather than cancelling uploads. macOS must sign/notarize. **The workflow never publishes the draft.**
+
+The five jobs upload distinct updater feeds: `latest-mac.yml`, `latest.yml` (Windows x64), `arm64.yml` (Windows ARM64), `latest-linux.yml`, and `latest-linux-arm64.yml`, with the matching ZIP/NSIS/AppImage/deb assets and blockmaps. **A partially populated draft is never fit to publish — and the final job enforces it mechanically.**
 
 ### Draft verification
 
 [`scripts/verify-release.ts`](../scripts/verify-release.ts) runs after all packaging jobs. It requires one draft matched by `v<version>` or bare `<version>`, refusing zero/two matches or a published match. Bare-version matches warn because later runs could split assets across tags.
 
-The draft must contain **exactly 11 uploaded, nonempty assets**:
+The draft must contain **exactly 17 uploaded, nonempty assets**:
 
 | Assets | Purpose |
 | --- | --- |
 | `LearnHarness-<v>-arm64.dmg` + `.blockmap` | macOS installer |
-| `LearnHarness-<v>-arm64-mac.zip` + `.blockmap` | macOS updater |
-| `LearnHarness-<v>-x64-setup.exe` + `.blockmap` | Windows installer/updater |
-| `LearnHarness-<v>-x86_64.AppImage` | Linux AppImage |
-| `LearnHarness-<v>-amd64.deb` | Debian package |
-| `latest-mac.yml`, `latest.yml`, `latest-linux.yml` | Updater feeds |
+| `LearnHarness-<v>-arm64-mac.zip` + `.blockmap` | macOS updater payload (Squirrel.Mac installs from the ZIP) |
+| `LearnHarness-<v>-x64-setup.exe` + `.blockmap` | Windows x64 NSIS installer |
+| `LearnHarness-<v>-arm64-setup.exe` + `.blockmap` | Windows ARM64 NSIS installer |
+| `LearnHarness-<v>-x86_64.AppImage` | Linux x64 AppImage (no sidecar blockmap) |
+| `LearnHarness-<v>-amd64.deb` | Linux x64 deb (no sidecar blockmap) |
+| `LearnHarness-<v>-arm64.AppImage` | Linux ARM64 AppImage (no sidecar blockmap) |
+| `LearnHarness-<v>-arm64.deb` | Linux ARM64 deb (no sidecar blockmap) |
+| `latest-mac.yml`, `latest.yml`, `arm64.yml`, `latest-linux.yml`, `latest-linux-arm64.yml` | Updater feeds |
+
+The Linux names are deliberate: the user-set `linux.artifactName` applies to both Linux targets, and `${arch}` expands per target — `x86_64` inside the x64 AppImage, `amd64` in the x64 deb, and `arm64` in both ARM64 packages — exactly what the installed app-builder-lib 26.15.3 emits. Windows has no platform suffix in its feed name, so the ARM64 job publishes `arm64.yml` on its own channel while x64 keeps `latest.yml`. The script's expectations fail closed if `electron-builder.yml` drifts from these shapes.
 
 Feed versions, exact referenced asset sets, bare filenames, sizes, and legacy path/hash fields must agree; macOS's ZIP must be first. Missing/stale extra assets, path traversal/URLs, or builder naming drift fail validation. The validator does not download/hash every installer; it checks draft metadata and downloaded feeds.
 
@@ -95,7 +114,7 @@ The workflow maps the certificate to `CSC_LINK`/`CSC_KEY_PASSWORD`; signing cred
 
 1. Agree scope/version and complete relevant gates and human functional acceptance. Use manual dispatch if rehearsal installers are useful; unsigned rehearsal does not prove macOS signing.
 2. Update package/lockfile versions, check the intended source on main, and push the authorized matching tag. Verify signing secrets before production macOS packaging.
-3. Wait for **all OS jobs and Verify draft release**. Inspect the single draft's tag, notes, 11 assets, and feeds. Diagnose failures before retrying. Re-upload replaces same-named assets; stale extras still fail. Deleting assets/releases is a mutation, not verification.
+3. Wait for **all OS jobs and Verify draft release**. Inspect the single draft's tag, notes, 17 assets, and five feeds. Diagnose failures before retrying. Re-upload replaces same-named assets; stale extras still fail. Deleting assets/releases is a mutation, not verification.
 4. If editing draft metadata, include canonical **`tag_name: "v<version>"` in every metadata PATCH**, even for title/body changes; omission has reset tags before. Re-read tag, draft status, and assets afterward. A tag correction does not authorize deleting/recreating a release.
 5. The owner checks the packaged build as needed and explicitly publishes the complete draft. Confirm public installers/feeds and website links; use a prior installed version for real update-path checks.
 
