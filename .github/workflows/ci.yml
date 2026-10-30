@@ -43,8 +43,14 @@ jobs:
             platform: mac-arm64
           - os: windows-2025
             platform: windows-x64
+          # Native arm64 runners: Next traces the build host's native
+          # binaries, so these must not be cross-built.
+          - os: windows-11-arm
+            platform: windows-arm64
           - os: ubuntu-24.04
             platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:

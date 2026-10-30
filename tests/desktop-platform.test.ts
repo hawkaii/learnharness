@@ -93,18 +93,19 @@ describe("desktop packaging policy", () => {
 		await validateConfiguration(config, { isEnabled: false });
 	});
 
-	it("ships Mac arm64, Windows NSIS x64, and both Linux x64 channels", () => {
+	it("ships Mac arm64, Windows NSIS x64/arm64, and both Linux x64/arm64 channels", () => {
 		assert.deepEqual(config.mac.target, [
 			{ target: "dmg", arch: ["arm64"] }, { target: "zip", arch: ["arm64"] },
 		]);
-		assert.deepEqual(config.win.target, [{ target: "nsis", arch: ["x64"] }]);
+		// Arch lives on the CLI flags, not target.arch: a job passing --arm64
+		// must not also package x64 (electron-builder builds both when the
+		// target lists both).
+		assert.deepEqual(config.win.target, ["nsis"]);
 		assert.equal(config.win.signExecutable, false);
 		assert.equal(config.win.verifyUpdateCodeSignature, false);
-		assert.deepEqual(config.linux.target, [
-			{ target: "AppImage", arch: ["x64"] }, { target: "deb", arch: ["x64"] },
-		]);
+		assert.deepEqual(config.linux.target, ["AppImage", "deb"]);
 		assert.equal(config.linux.syncDesktopName, true);
-		assert.equal(config.publish[0].releaseType, "draft");
+		assert.equal(config.publish.releaseType, "draft");
 	});
 
 	it("deb has public maintainer metadata and a matching desktop identity", () => {
@@ -157,7 +158,7 @@ describe("desktop release workflow", () => {
 		concurrency: { group: string; "cancel-in-progress": boolean };
 		jobs: Record<string, {
 			needs?: string | string[]; steps: Step[]; "runs-on"?: string;
-			strategy?: { matrix: { include: { os: string; platform: string; builder_args?: string }[] } };
+			strategy?: { matrix: { include: { os: string; platform: string; builder_args?: string; unpacked?: string }[] } };
 		}>;
 	};
 	const yaml = require("js-yaml") as { load(source: string): Workflow };
@@ -233,6 +234,19 @@ describe("desktop release workflow", () => {
 		const ci = yaml.load(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
 		const ciMac = ci.jobs.standalone?.strategy?.matrix.include.find(entry => entry.platform === "mac-arm64");
 		assert.equal(ciMac?.os, "macos-15", "ordinary CI keeps older macOS build/boot coverage");
+	});
+
+	it("builds each ARM package on a native ARM runner with its own path/channel", () => {
+		const include = packaging.strategy?.matrix.include;
+		assert.ok(include);
+		const winArm = include.find(entry => entry.platform === "windows-arm64");
+		assert.equal(winArm?.os, "windows-11-arm");
+		assert.equal(winArm?.builder_args, "--win --arm64 -c.publish.channel=arm64");
+		assert.equal(winArm?.unpacked, "dist/win-arm64-unpacked");
+		const linuxArm = include.find(entry => entry.platform === "linux-arm64");
+		assert.equal(linuxArm?.os, "ubuntu-24.04-arm");
+		assert.equal(linuxArm?.builder_args, "--linux --arm64");
+		assert.equal(linuxArm?.unpacked, "dist/linux-arm64-unpacked");
 	});
 
 	it("creates exactly one unpublished draft when none matches", async () => {
