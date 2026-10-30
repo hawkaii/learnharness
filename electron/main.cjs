@@ -50,6 +50,14 @@ const PRODUCT_NAME = "LearnHarness";
 // Must run before the LH_DEV_URL suffix below — dev becomes
 // "LearnHarness-dev".
 app.setName(PRODUCT_NAME);
+
+// Linux fractional scaling (1.25–1.5x) + LCD subpixel AA: Chromium fringes
+// and double-paints small uppercase labels (the sidebar's 11px tracking-wide
+// text is the visible case). The renderer already asks for grayscale
+// smoothing; disable LCD text on Linux so the raster is stable at every
+// fractional scale. No effect on macOS or Windows.
+if (process.platform === "linux") app.commandLine.appendSwitch("disable-lcd-text");
+
 const AUTH_FILE = () => path.join(app.getPath("userData"), "auth.json");
 const DATA_DIR = () => path.join(app.getPath("userData"), "data");
 
