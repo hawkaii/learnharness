@@ -56,6 +56,7 @@ describe("desktop development startup", () => {
 			app: {
 				setName() {}, getPath: () => "/fixture/LearnHarness", setPath() {},
 				requestSingleInstanceLock: () => false, quit() {}, on() {}, once() {}, removeListener() {}, whenReady: async () => {},
+				commandLine: { appendSwitch() {} },
 			},
 			BrowserWindow: FakeWindow,
 			nativeTheme: { themeSource: "system" },
@@ -112,7 +113,7 @@ describe("desktop appearance boot and IPC", () => {
 			require: (id: string) => {
 				if (id === "electron") return {
 					app: { setName() {}, getPath: () => "/fixture/shell", setPath() {}, requestSingleInstanceLock: () => false,
-						quit() {}, on() {}, once() {}, removeListener() {}, whenReady: async () => {} },
+						quit() {}, on() {}, once() {}, removeListener() {}, whenReady: async () => {}, commandLine: { appendSwitch() {} } },
 					BrowserWindow: FakeWindow, nativeTheme,
 					Menu: { buildFromTemplate() {}, setApplicationMenu() {} },
 					ipcMain: { handle() {}, on: (name: string, fn: (event: unknown, value: unknown) => void) => handlers.set(name, fn) },
